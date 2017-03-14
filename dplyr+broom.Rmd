@@ -1,0 +1,163 @@
+---
+title: "R Notebook"
+output:
+html_document: default
+html_notebook: default
+---
+
+From https://cran.r-project.org/web/packages/broom/vignettes/bootstrapping.html.
+
+This is basically the above vignette that I entered so I could explore the results and add my own notes where there were things I didn't know.  So, read this, or read that, it's the same results.
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+data(mtcars)
+
+dplyr::glimpse(mtcars)
+```
+```{r}
+ggplot2::ggplot(data=mtcars,
+                ggplot2::aes(x=mpg, y=wt)) +
+  ggplot2::geom_point() -> gp1
+
+print(gp1)
+
+```
+
+Using nls (nonlinear least squares) to model
+
+```{r}
+nls(mpg ~ k / wt + b,
+    mtcars,
+    start=list(k=1, b=0)) -> nlsfit
+summary(nlsfit)
+```
+```{r}
+ggplot2::ggplot(data=mtcars,
+                ggplot2::aes(x=wt, y=mpg)) +
+  ggplot2::geom_point() +
+  ggplot2::geom_line(aes(y=predict(nlsfit))) -> gp2
+
+print(gp2)
+```
+
+the nls produces an estimate but bootstrapping can help produce better results by testing multiple random samples of the data.  See https://en.wikipedia.org/wiki/Bootstrapping_(statistics) for a more detailed description of what bootstrapping is.
+
+Using the broom::bootstrap() function, create some (100) bootstraps and pass these to the  dplyr::do() function after broom::tidy()ing them.  broom::tidy() tries to make the model results into a "tidy" data.frame.
+
+```{r}
+library(dplyr)
+library(broom)
+
+set.seed(2014)
+mtcars %>% 
+  broom::bootstrap(100) %>%
+  dplyr::do(broom::tidy(nls(mpg ~ k / wt + b, data=., start=list(k=1, b=0)))) -> bootnls
+
+dplyr::glimpse(bootnls)
+```
+```{r}
+print(bootnls)
+```
+
+Next is to calculate the confidence intervals.  There are several ways to do that see [Bootstrapping Means](https://www.uvm.edu/~dhowell/StatPages/Randomization Tests/ResamplingWithR/BoostMeans/bootstraping_means.html).
+
+Quantile returns the value(s) at the probabilities provided by probs.
+
+```{r}
+0.05 -> alpha
+
+bootnls %>%
+  group_by(term) %>%
+  summarize(low=quantile(estimate, probs=alpha / 2),
+            high=quantile(estimate, probs=1 - alpha / 2)) -> bootnls_quants
+
+print(bootnls_quants)
+```
+
+Above are the range.  See how these values compare to the histograms
+
+```{r}
+ggplot(bootnls, aes(x=estimate)) + 
+  geom_histogram(binwidth=1) + 
+  facet_wrap(~ term, scales='free') -> gp3
+
+print(gp3)
+```
+
+Next the author used the broom::augment() function to add columns to the original dataset.
+
+The dplyr::do() function applies each bootstrap dataset to the nls() model and then each is applied to broom::augment() which converts the untidy model results to a consistent tidy data.frame.  Do, combines each resulting data.set int a single output data.set.
+
+```{r}
+mtcars %>%
+  broom::bootstrap(100) %>%
+  dplyr::do(broom::augment(nls(mpg ~ k / wt + b, 
+                               data=., 
+                               start=list(k=1, b=0)),
+                           .)) -> bootnls_aug
+
+dplyr::glimpse(bootnls_aug)
+```
+```{r}
+unique(bootnls_aug$replicate)
+```
+```{r}
+print(bootnls_aug)
+```
+
+Now plot the data and the .fitted values.  
+
+**NOTE**: broom:augment() names the new values .<colname> to avoid possible conflicts with existing variable names.
+
+```{r}
+ggplot2::ggplot(data=bootnls_aug, aes(x=wt, y=mpg)) +
+  geom_point() +
+  geom_line(aes(y=.fitted, group=replicate), alpha=0.2) -> gp4
+
+print(gp4)
+```
+
+That's perdy.  We can see here that there the estimates are all pretty close, with the greatest variation at either end of vehicle wt.
+
+This can also be applied to other modeling/smoothing methods.  The second example uses the smooth.spline method.  Note that the code is the seame except the nls() function is replace with the smooth.spline() function.
+
+```{r}
+mtcars %>%
+  broom::bootstrap(100) %>%
+  dplyr::do(broom::augment(smooth.spline(.$wt, .$mpg, df=4), 
+                           .)) -> smoothspline_aug
+
+dplyr::glimpse(smoothspline_aug)
+```
+```{r}
+ggplot2::ggplot(smoothspline_aug, aes(x=wt, y=mpg)) +
+  ggplot2::geom_point() +
+  ggplot2::geom_line(aes(y=.fitted, group=replicate), alpha=.2) -> gp5
+
+print(gp5)
+```
+
+Here's where I go "off the rails" and take from Andrew MacDonalds [bootstraping regressions with dplyr post](http://rstudio-pubs-static.s3.amazonaws.com/19698_a4c472606e3c43e4b94720506e49bb7b.html).
+
+First I'm going to calcuate the upper and lower quantiles as we did earlier, but against the bootstraped data.  first, get the upper and lower bounds of the data.
+
+```{r}
+smoothspline_aug %>%
+  dplyr::group_by(wt) %>%
+  dplyr::summarize(up=quantile(.fitted, 0.975),
+                   lo=quantile(.fitted, 1 - 0.975)) -> smoothspline_aug_ci
+
+dplyr::glimpse(smoothspline_aug_ci)
+```
+
+```{r}
+ggplot2::ggplot(data=smoothspline_aug, aes(x=wt, y=mpg)) +
+  ggplot2::geom_point() +
+  ggplot2::geom_line(data=smoothspline_aug_ci, aes(x=wt, y=up)) +
+  ggplot2::geom_line(data=smoothspline_aug_ci, aes(x=wt, y=lo)) -> gp6
+
+print(gp6)
+```
